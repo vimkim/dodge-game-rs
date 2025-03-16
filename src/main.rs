@@ -9,10 +9,10 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Alignment, Rect},
+    layout::Alignment,
     style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    text::{Span, Spans},
+    widgets::{Block as WidgetBlock, Borders, Paragraph},
     Terminal,
 };
 use rand::Rng;
@@ -21,7 +21,8 @@ use rand::Rng;
 const TICK_RATE: Duration = Duration::from_millis(200);
 const NEW_BLOCK_PROBABILITY: f64 = 0.1; // probability per column per tick
 
-struct Block {
+#[derive(Clone)]
+struct FallingBlock {
     x: u16,
     y: u16,
 }
@@ -29,10 +30,10 @@ struct Block {
 struct Game {
     player_x: u16,
     player_y: u16,
-    blocks: Vec<Block>,
+    blocks: Vec<FallingBlock>,
     score: u64,
-    width: u16,
-    height: u16,
+    width: u16,  // playable width (inner area)
+    height: u16, // playable height (inner area)
 }
 
 impl Game {
@@ -51,10 +52,10 @@ impl Game {
     fn update(&mut self) {
         let mut rng = rand::thread_rng();
 
-        // Spawn new blocks along the top row
+        // Spawn new blocks along the top row of the playable area
         for x in 0..self.width {
             if rng.gen_bool(NEW_BLOCK_PROBABILITY) {
-                self.blocks.push(Block { x, y: 0 });
+                self.blocks.push(FallingBlock { x, y: 0 });
             }
         }
 
@@ -70,7 +71,9 @@ impl Game {
 
     // Check for collision between the player and any block
     fn check_collision(&self) -> bool {
-        self.blocks.iter().any(|b| b.x == self.player_x && b.y == self.player_y)
+        self.blocks
+            .iter()
+            .any(|b| b.x == self.player_x && b.y == self.player_y)
     }
 }
 
@@ -82,39 +85,47 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Get terminal size and initialize game state
-    let size = terminal.size()?;
-    let mut game = Game::new(size.width, size.height);
+    // Get terminal size and compute playable area (subtract border: 1 on each side)
+    let outer_size = terminal.size()?;
+    let playable_width = outer_size.width.saturating_sub(2);
+    let playable_height = outer_size.height.saturating_sub(2);
+
+    let mut game = Game::new(playable_width, playable_height);
     let mut last_tick = Instant::now();
 
     'game_loop: loop {
         // Draw the game frame
         terminal.draw(|f| {
-            let area = f.size();
+            let outer_area = f.size();
+            let block = WidgetBlock::default()
+                .borders(Borders::ALL)
+                .title(format!("Score: {}", game.score));
+            let inner_area = block.inner(outer_area);
 
-            // Build a vector of lines representing each row
-            let mut lines = Vec::with_capacity(area.height as usize);
-            for y in 0..area.height {
-                let mut line = String::with_capacity(area.width as usize);
-                for x in 0..area.width {
+            // Build a vector of Spans representing each row in the playable area
+            let mut lines = Vec::with_capacity(inner_area.height as usize);
+            for y in 0..inner_area.height {
+                let mut spans = Vec::with_capacity(inner_area.width as usize);
+                for x in 0..inner_area.width {
                     if y == game.player_y && x == game.player_x {
-                        line.push('@');
+                        // Player drawn with a contrasting style
+                        spans.push(Span::styled(
+                            "@",
+                            Style::default().fg(Color::Black).bg(Color::Yellow),
+                        ));
                     } else if game.blocks.iter().any(|b| b.x == x && b.y == y) {
-                        line.push('#');
+                        spans.push(Span::raw("#"));
                     } else {
-                        line.push(' ');
+                        spans.push(Span::raw(" "));
                     }
                 }
-                lines.push(Line::from(Span::raw(line)));
+                lines.push(Spans::from(spans));
             }
 
-            // Create a Paragraph widget to display the game area with a border and score title
-            let block = Block::default().borders(Borders::ALL).title(format!("Score: {}", game.score));
             let paragraph = Paragraph::new(lines)
                 .block(block)
                 .alignment(Alignment::Left);
-
-            f.render_widget(paragraph, area);
+            f.render_widget(paragraph, outer_area);
         })?;
 
         // Input handling with non-blocking poll
